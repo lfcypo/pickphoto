@@ -6,6 +6,10 @@ on:
     branches:
       - main
   workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: false
   workflow_dispatch:
 
 permissions:
@@ -25,6 +29,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v7

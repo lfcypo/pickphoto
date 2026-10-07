@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - '**'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to publish
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,17 +26,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
           fetch-depth: 0
       - name: Verify tag commit
         shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse -q --verify "refs/tags/$RELEASE_TAG^{commit}")"
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
 
   test:
     name: Test release
     needs: verify-tag
     uses: ./.github/workflows/test.yaml
+    with:
+      ref: refs/tags/${{ inputs.tag || github.ref_name }}
 
   build-windows:
     name: Build Windows executable
@@ -39,6 +51,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
@@ -69,22 +83,24 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
-      - name: Build macOS disk image
-        run: PATH="/usr/bin:$PATH" go tool mygo build -platform darwin/arm64 -sign - .
-      - name: Prepare macOS asset
+      - name: Build macOS application
+        run: PATH="/usr/bin:$PATH" go tool mygo build -platform darwin/arm64 -sign - -skip-dmg .
+      - name: Package macOS disk image
         shell: bash
         run: |
           set -euo pipefail
-          dmg_files=(build/darwin-arm64/*.dmg)
-          test "${#dmg_files[@]}" -eq 1
-          test -f "${dmg_files[0]}"
-          mkdir -p dist
-          cp "${dmg_files[0]}" dist/PickPhoto-darwin-arm64.dmg
+          mkdir -p build/dmg-root dist
+          ditto build/darwin-arm64/PickPhoto.app build/dmg-root/PickPhoto.app
+          ln -sfn /Applications build/dmg-root/Applications
+          hdiutil create -quiet -ov -volname PickPhoto -srcfolder build/dmg-root -format ULMO -o dist/PickPhoto-darwin-arm64.dmg
+          hdiutil verify dist/PickPhoto-darwin-arm64.dmg
       - name: Upload macOS asset
         uses: actions/upload-artifact@v7
         with:
@@ -116,13 +132,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
           assets=(dist/PickPhoto-windows-amd64.exe dist/PickPhoto-darwin-arm64.dmg)
           test -s "${assets[0]}"
           test -s "${assets[1]}"
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --verify-tag --generate-notes
+            gh release create "$RELEASE_TAG" "${assets[@]}" --verify-tag --generate-notes
           fi
