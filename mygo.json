@@ -1,0 +1,7 @@
+{
+  "name": "PickPhoto",
+  "identifier": "com.lfcypo.pickphoto",
+  "version": "0.1.0",
+  "main": "./cmd/pickphoto",
+  "out": "build"
+}

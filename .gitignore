@@ -1,0 +1,7 @@
+/build/
+/dist/
+*.exe
+*.test
+.DS_Store
+.serena
+.idea

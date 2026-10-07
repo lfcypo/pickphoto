@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-tag:
+    name: Verify tag is on main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Verify tag commit
+        shell: bash
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+
+  test:
+    name: Test release
+    needs: verify-tag
+    uses: ./.github/workflows/test.yaml
+
+  build-windows:
+    name: Build Windows executable
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build Windows executable
+        run: go tool mygo build -platform windows/amd64 .
+      - name: Prepare Windows asset
+        shell: pwsh
+        run: |
+          $source = 'build/windows-amd64/PickPhoto.exe'
+          if (-not (Test-Path $source -PathType Leaf)) {
+            throw "Missing Windows executable: $source"
+          }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item $source dist/PickPhoto-windows-amd64.exe
+      - name: Upload Windows asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: pickphoto-windows-amd64
+          path: dist/PickPhoto-windows-amd64.exe
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS disk image
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build macOS disk image
+        run: PATH="/usr/bin:$PATH" go tool mygo build -platform darwin/arm64 -sign - .
+      - name: Prepare macOS asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg_files=(build/darwin-arm64/*.dmg)
+          test "${#dmg_files[@]}" -eq 1
+          test -f "${dmg_files[0]}"
+          mkdir -p dist
+          cp "${dmg_files[0]}" dist/PickPhoto-darwin-arm64.dmg
+      - name: Upload macOS asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: pickphoto-darwin-arm64
+          path: dist/PickPhoto-darwin-arm64.dmg
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs:
+      - build-windows
+      - build-macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows asset
+        uses: actions/download-artifact@v8
+        with:
+          name: pickphoto-windows-amd64
+          path: dist
+      - name: Download macOS asset
+        uses: actions/download-artifact@v8
+        with:
+          name: pickphoto-darwin-arm64
+          path: dist
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          assets=(dist/PickPhoto-windows-amd64.exe dist/PickPhoto-darwin-arm64.dmg)
+          test -s "${assets[0]}"
+          test -s "${assets[1]}"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --verify-tag --generate-notes
+          fi
